@@ -359,6 +359,7 @@ class ff:
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
   print("do_lower_case:", FLAGS.do_lower_case)
+  print("do_tokens_only:", FLAGS.do_tokens_only)
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -404,6 +405,15 @@ def main(_):
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
 
+  if not FLAGS.do_tokens_only:
+    unique_id_to_token_info = {}
+    for feature in features:
+        len_with_cls_sep = len([i for i in feature.input_ids if i > 0])
+        unique_id_to_token_info[feature.unique_id] = {
+            # remove [CLS], [SEP]
+            "original_to_bert": list(range(len_with_cls_sep))[1:-1],
+        }
+
   unique_id_to_feature = {}
   for feature in features:
     unique_id_to_feature[feature.unique_id] = feature
@@ -448,12 +458,14 @@ def main(_):
 
       # Check that number of timesteps in features is the same as
       # the number of words.
-      if len(unique_id_to_token_info[unique_id]["original_tokens"]) != features_to_write.shape[1]:
-        raise ValueError("Original tokens: {} with len {}. "
+      if FLAGS.do_tokens_only:
+        if len(unique_id_to_token_info[unique_id]["original_tokens"]) != features_to_write.shape[1]:
+            raise ValueError("Original tokens: {} with len {}. "
                          "Shape of features_to_write: {}".format(
                            unique_id_to_token_info[unique_id]["original_tokens"],
                            len(unique_id_to_token_info[unique_id]["original_tokens"]),
                            features_to_write.shape))
+
       fout.create_dataset(unique_id_str,
                           features_to_write.shape, dtype='float32',
                           data=features_to_write)
