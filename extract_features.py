@@ -18,14 +18,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import codecs
-import collections
 import json
 import re
 
 import modeling
 import tokenization
 import tensorflow as tf
+
+import h5py
+import numpy as np
+from tqdm import tqdm
 
 flags = tf.flags
 
@@ -34,8 +36,6 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("input_file", None, "")
 
 flags.DEFINE_string("output_file", None, "")
-
-flags.DEFINE_string("layers", "-1,-2,-3,-4", "")
 
 flags.DEFINE_string(
     "bert_config_file", None,
@@ -77,6 +77,7 @@ flags.DEFINE_bool(
     "tf.nn.embedding_lookup will be used. On TPUs, this should be True "
     "since it is much faster.")
 
+NUM_BERT_LAYERS = 0
 
 class InputExample(object):
 
@@ -145,7 +146,7 @@ def input_fn_builder(features, seq_length):
   return input_fn
 
 
-def model_fn_builder(bert_config, init_checkpoint, layer_indexes, use_tpu,
+def model_fn_builder(bert_config, init_checkpoint, use_tpu,
                      use_one_hot_embeddings):
   """Returns `model_fn` closure for TPUEstimator."""
 
@@ -191,13 +192,17 @@ def model_fn_builder(bert_config, init_checkpoint, layer_indexes, use_tpu,
                       init_string)
 
     all_layers = model.get_all_encoder_layers()
+    # Prepend the embeddings to all_layers
+    all_layers.insert(0, model.get_embedding_output())
 
     predictions = {
         "unique_id": unique_ids,
     }
 
-    for (i, layer_index) in enumerate(layer_indexes):
-      predictions["layer_output_%d" % i] = all_layers[layer_index]
+    global NUM_BERT_LAYERS
+    NUM_BERT_LAYERS = len(all_layers)
+    for layer_index in range(NUM_BERT_LAYERS):
+      predictions["layer_output_%d" % layer_index] = all_layers[layer_index]
 
     output_spec = tf.contrib.tpu.TPUEstimatorSpec(
         mode=mode, predictions=predictions, scaffold_fn=scaffold_fn)
@@ -211,7 +216,11 @@ def convert_examples_to_features(examples, seq_length, tokenizer):
 
   features = []
   for (ex_index, example) in enumerate(examples):
-    tokens_a = tokenizer.tokenize(example.text_a)
+    # Split words independently to maintain alignment with labels
+    tokens_a = []
+    tokenized_text_a = example.text_a.split(" ")
+    for text_a_token in tokenized_text_a:
+      tokens_a.extend(tokenizer.tokenize(text_a_token))
 
     tokens_b = None
     if example.text_b:
@@ -342,8 +351,6 @@ def read_examples(input_file):
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
 
-  layer_indexes = [int(x) for x in FLAGS.layers.split(",")]
-
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
   tokenizer = tokenization.FullTokenizer(
@@ -358,6 +365,23 @@ def main(_):
 
   examples = read_examples(FLAGS.input_file)
 
+  # Get a mapping of unique_id to the orig_to_token_map
+  unique_id_to_token_info = {}
+  for example in examples:
+    original_tokens = example.text_a.split(" ")
+    bert_tokens = []
+    original_to_bert = []
+    bert_tokens.append("[CLS]")
+    for orig_token in original_tokens:
+      original_to_bert.append(len(bert_tokens))
+      bert_tokens.extend(tokenizer.tokenize(orig_token))
+    bert_tokens.append("[SEP]")
+    assert len(original_to_bert) == len(original_tokens)
+    unique_id_to_token_info[example.unique_id] = {
+      "original_tokens": original_tokens,
+      "bert_tokens": bert_tokens,
+      "original_to_bert": original_to_bert}
+
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
 
@@ -368,7 +392,6 @@ def main(_):
   model_fn = model_fn_builder(
       bert_config=bert_config,
       init_checkpoint=FLAGS.init_checkpoint,
-      layer_indexes=layer_indexes,
       use_tpu=FLAGS.use_tpu,
       use_one_hot_embeddings=FLAGS.use_one_hot_embeddings)
 
@@ -383,31 +406,53 @@ def main(_):
   input_fn = input_fn_builder(
       features=features, seq_length=FLAGS.max_seq_length)
 
-  with codecs.getwriter("utf-8")(tf.gfile.Open(FLAGS.output_file,
-                                               "w")) as writer:
-    for result in estimator.predict(input_fn, yield_single_examples=True):
+  # Dict of str line# to (num_layers, num_tokens, embedding_size) numpy array
+  output_features = {}
+  sentence_to_index = {}
+  with h5py.File(FLAGS.output_file, "w") as fout:
+    for result in tqdm(estimator.predict(input_fn, yield_single_examples=True)):
       unique_id = int(result["unique_id"])
+      unique_id_str = str(unique_id)
+      sentence_to_index[
+        " ".join(unique_id_to_token_info[unique_id]["original_tokens"])] = unique_id_str
+
+      # Get the vectors for the sentence
       feature = unique_id_to_feature[unique_id]
-      output_json = collections.OrderedDict()
-      output_json["linex_index"] = unique_id
+      # Len: num_tokens
       all_features = []
       for (i, token) in enumerate(feature.tokens):
+        # only write token embedding if it corresponds to the representation
+        # for an original word.
+        if i not in unique_id_to_token_info[unique_id]["original_to_bert"]:
+          continue
+        # Len: num_layers
         all_layers = []
-        for (j, layer_index) in enumerate(layer_indexes):
-          layer_output = result["layer_output_%d" % j]
-          layers = collections.OrderedDict()
-          layers["index"] = layer_index
-          layers["values"] = [
+        for layer_num in range(NUM_BERT_LAYERS):
+          layer_output = result["layer_output_%d" % layer_num]
+          layer_output_values = [
               round(float(x), 6) for x in layer_output[i:(i + 1)].flat
           ]
-          all_layers.append(layers)
-        features = collections.OrderedDict()
-        features["token"] = token
-        features["layers"] = all_layers
-        all_features.append(features)
-      output_json["features"] = all_features
-      writer.write(json.dumps(output_json) + "\n")
+          all_layers.append(layer_output_values)
+        all_layers = np.array(all_layers)
+        all_features.append(all_layers)
 
+      # Write features to HDF5
+      features_to_write = np.array(all_features).transpose((1, 0, 2))
+      # Check that number of timesteps in features is the same as
+      # the number of words.
+      if len(unique_id_to_token_info[unique_id]["original_tokens"]) != features_to_write.shape[1]:
+        raise ValueError("Original tokens: {} with len {}. "
+                         "Shape of features_to_write: {}".format(
+                           unique_id_to_token_info[unique_id]["original_tokens"],
+                           len(unique_id_to_token_info[unique_id]["original_tokens"]),
+                           features_to_write.shape))
+      fout.create_dataset(unique_id_str,
+                          features_to_write.shape, dtype='float32',
+                          data=features_to_write)
+    # Write sentence_to_index dict to HDF5
+    sentence_index_dataset = fout.create_dataset(
+      "sentence_to_index", (1,), dtype=h5py.special_dtype(vlen=str))
+    sentence_index_dataset[0] = json.dumps(sentence_to_index)
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
