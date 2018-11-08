@@ -77,6 +77,9 @@ flags.DEFINE_bool(
     "tf.nn.embedding_lookup will be used. On TPUs, this should be True "
     "since it is much faster.")
 
+flags.DEFINE_bool(
+    "do_tokens_only", True, "Only output features for first byte pair of each token")
+
 NUM_BERT_LAYERS = 0
 
 class InputExample(object):
@@ -338,6 +341,19 @@ def read_examples(input_file):
       unique_id += 1
   return examples
 
+class ff:
+    do_lower_case = True
+    bert_config_file = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_config.json'
+    vocab_file = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/vocab.txt'
+    init_checkpoint = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_model.ckpt'
+    max_seq_length = 128
+    batch_size = 4
+    use_tpu = False
+    master = None
+    num_tpu_cores = 8
+    use_one_hot_embeddings = False
+    do_tokens_only = True
+
 
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
@@ -357,31 +373,32 @@ def main(_):
 
   examples = read_examples(FLAGS.input_file)
 
-  # Get a mapping of unique_id to the orig_to_token_map
-  unique_id_to_token_info = {}
-  for example in examples:
-    original_tokens = example.text_a.strip().split()
-    bert_tokens = []
-    original_to_bert = []
-    tokens_to_remove = []
-    bert_tokens.append("[CLS]")
-    for orig_token in original_tokens:
-      bt = tokenizer.tokenize(orig_token)
-      if len(bt) == 0:
-        tokens_to_remove.append(orig_token)
-      else:
-        original_to_bert.append(len(bert_tokens))
-        bert_tokens.extend(bt)
-    if len(tokens_to_remove) > 0:
-        tm = set(tokens_to_remove)
-        ot = [token for token in original_tokens if token not in tm]
-        original_tokens = ot
-    bert_tokens.append("[SEP]")
-    assert len(original_to_bert) == len(original_tokens)
-    unique_id_to_token_info[example.unique_id] = {
-      "original_tokens": original_tokens,
-      "bert_tokens": bert_tokens,
-      "original_to_bert": set(original_to_bert)}
+  if FLAGS.do_tokens_only:
+      # Get a mapping of unique_id to the orig_to_token_map
+      unique_id_to_token_info = {}
+      for example in examples:
+        original_tokens = example.text_a.strip().split()
+        bert_tokens = []
+        original_to_bert = []
+        tokens_to_remove = []
+        bert_tokens.append("[CLS]")
+        for orig_token in original_tokens:
+          bt = tokenizer.tokenize(orig_token)
+          if len(bt) == 0:
+            tokens_to_remove.append(orig_token)
+          else:
+            original_to_bert.append(len(bert_tokens))
+            bert_tokens.extend(bt)
+        if len(tokens_to_remove) > 0:
+            tm = set(tokens_to_remove)
+            ot = [token for token in original_tokens if token not in tm]
+            original_tokens = ot
+        bert_tokens.append("[SEP]")
+        assert len(original_to_bert) == len(original_tokens)
+        unique_id_to_token_info[example.unique_id] = {
+          "original_tokens": original_tokens,
+          "bert_tokens": bert_tokens,
+          "original_to_bert": set(original_to_bert)}
 
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
@@ -455,7 +472,7 @@ def main(_):
       "sentence_to_index", (1,), dtype=h5py.special_dtype(vlen=str))
     sentence_index_dataset[0] = json.dumps(sentence_to_index)
 
-if __name__ == "__main__":
+if __name__ == "__main_":
   flags.mark_flag_as_required("input_file")
   flags.mark_flag_as_required("vocab_file")
   flags.mark_flag_as_required("bert_config_file")
