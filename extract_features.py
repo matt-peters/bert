@@ -343,9 +343,10 @@ def read_examples(input_file):
 
 class ff:
     do_lower_case = True
-    bert_config_file = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_config.json'
-    vocab_file = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/vocab.txt'
-    init_checkpoint = '/Users/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_model.ckpt'
+    bert_config_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_config.json'
+    vocab_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/vocab.txt'
+    init_checkpoint = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_model.ckpt'
+    input_file = 'tt.txt'
     max_seq_length = 128
     batch_size = 4
     use_tpu = False
@@ -426,36 +427,25 @@ def main(_):
 
   # Dict of str line# to (num_layers, num_tokens, embedding_size) numpy array
   output_features = {}
-  sentence_to_index = {}
   with h5py.File(FLAGS.output_file, "w") as fout:
     for result in tqdm(estimator.predict(input_fn, yield_single_examples=True)):
       unique_id = int(result["unique_id"])
       unique_id_str = str(unique_id)
-      sentence_to_index[
-        " ".join(unique_id_to_token_info[unique_id]["original_tokens"])] = unique_id_str
 
       # Get the vectors for the sentence
       feature = unique_id_to_feature[unique_id]
-      # Len: num_tokens
-      all_features = []
-      for (i, token) in enumerate(feature.tokens):
-        # only write token embedding if it corresponds to the representation
-        # for an original word.
-        if i not in unique_id_to_token_info[unique_id]["original_to_bert"]:
-          continue
-        # Len: num_layers
-        all_layers = []
-        for layer_num in range(NUM_BERT_LAYERS):
-          layer_output = result["layer_output_%d" % layer_num]
-          layer_output_values = [
-              round(float(x), 6) for x in layer_output[i:(i + 1)].flat
-          ]
-          all_layers.append(layer_output_values)
-        all_layers = np.array(all_layers)
-        all_features.append(all_layers)
 
-      # Write features to HDF5
-      features_to_write = np.array(all_features).transpose((1, 0, 2))
+      ids_to_select = np.array(
+        sorted(list(unique_id_to_token_info[unique_id]["original_to_bert"]))
+      )
+      n_tokens = len(ids_to_select)
+      embed_dim = result["layer_output_0"].shape[1]
+      features_to_write = np.empty((NUM_BERT_LAYERS, n_tokens, embed_dim),
+                                   dtype=np.float32)
+      for layer_num in range(NUM_BERT_LAYERS):
+        layer_output = result["layer_output_%d" % layer_num]
+        features_to_write[layer_num, :, :] = layer_output[ids_to_select]
+
       # Check that number of timesteps in features is the same as
       # the number of words.
       if len(unique_id_to_token_info[unique_id]["original_tokens"]) != features_to_write.shape[1]:
@@ -467,12 +457,8 @@ def main(_):
       fout.create_dataset(unique_id_str,
                           features_to_write.shape, dtype='float32',
                           data=features_to_write)
-    # Write sentence_to_index dict to HDF5
-    sentence_index_dataset = fout.create_dataset(
-      "sentence_to_index", (1,), dtype=h5py.special_dtype(vlen=str))
-    sentence_index_dataset[0] = json.dumps(sentence_to_index)
 
-if __name__ == "__main_":
+if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
   flags.mark_flag_as_required("vocab_file")
   flags.mark_flag_as_required("bert_config_file")
