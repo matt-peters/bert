@@ -171,8 +171,8 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
 
     tvars = tf.trainable_variables()
     scaffold_fn = None
-    (assignment_map, initialized_variable_names
-    ) = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
+    (assignment_map, _) = modeling.get_assignment_map_from_checkpoint(
+        tvars, init_checkpoint)
     if use_tpu:
 
       def tpu_scaffold():
@@ -182,14 +182,6 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
       scaffold_fn = tpu_scaffold
     else:
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
 
     all_layers = model.get_all_encoder_layers()
     # Prepend the embeddings to all_layers
@@ -290,8 +282,7 @@ def convert_examples_to_features(examples, seq_length, tokenizer):
     if ex_index < 5:
       tf.logging.info("*** Example ***")
       tf.logging.info("unique_id: %s" % (example.unique_id))
-      tf.logging.info("tokens: %s" % " ".join(
-          [tokenization.printable_text(x) for x in tokens]))
+      tf.logging.info("tokens: %s" % " ".join([str(x) for x in tokens]))
       tf.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
       tf.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
       tf.logging.info(
@@ -350,6 +341,7 @@ def read_examples(input_file):
 
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
+  print("do_lower_case:", FLAGS.do_lower_case)
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -368,19 +360,28 @@ def main(_):
   # Get a mapping of unique_id to the orig_to_token_map
   unique_id_to_token_info = {}
   for example in examples:
-    original_tokens = example.text_a.split(" ")
+    original_tokens = example.text_a.strip().split()
     bert_tokens = []
     original_to_bert = []
+    tokens_to_remove = []
     bert_tokens.append("[CLS]")
     for orig_token in original_tokens:
-      original_to_bert.append(len(bert_tokens))
-      bert_tokens.extend(tokenizer.tokenize(orig_token))
+      bt = tokenizer.tokenize(orig_token)
+      if len(bt) == 0:
+        tokens_to_remove.append(orig_token)
+      else:
+        original_to_bert.append(len(bert_tokens))
+        bert_tokens.extend(bt)
+    if len(tokens_to_remove) > 0:
+        tm = set(tokens_to_remove)
+        ot = [token for token in original_tokens if token not in tm]
+        original_tokens = ot
     bert_tokens.append("[SEP]")
     assert len(original_to_bert) == len(original_tokens)
     unique_id_to_token_info[example.unique_id] = {
       "original_tokens": original_tokens,
       "bert_tokens": bert_tokens,
-      "original_to_bert": original_to_bert}
+      "original_to_bert": set(original_to_bert)}
 
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
