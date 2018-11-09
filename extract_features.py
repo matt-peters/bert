@@ -346,7 +346,7 @@ class ff:
     bert_config_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_config.json'
     vocab_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/vocab.txt'
     init_checkpoint = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_model.ckpt'
-    input_file = 'tt.txt'
+    input_file = 'tt_pair.txt'
     max_seq_length = 128
     batch_size = 4
     use_tpu = False
@@ -396,11 +396,34 @@ def main(_):
             ot = [token for token in original_tokens if token not in tm]
             original_tokens = ot
         bert_tokens.append("[SEP]")
+
         assert len(original_to_bert) == len(original_tokens)
         unique_id_to_token_info[example.unique_id] = {
           "original_tokens": original_tokens,
-          "bert_tokens": bert_tokens,
           "original_to_bert": set(original_to_bert)}
+
+        # the second sentence
+        if example.text_b is not None:
+            original_tokens = example.text_b.strip().split()
+            original_to_bert = []
+            tokens_to_remove = []
+            for orig_token in original_tokens:
+                bt = tokenizer.tokenize(orig_token)
+                if len(bt) == 0:
+                    tokens_to_remove.append(orig_token)
+                else:
+                    original_to_bert.append(len(bert_tokens))
+                    bert_tokens.extend(bt)
+            if len(tokens_to_remove) > 0:
+                tm = set(tokens_to_remove)
+                ot = [token for token in original_tokens if token not in tm]
+                original_tokens = ot
+            bert_tokens.append("[SEP]")
+
+            assert len(original_to_bert) == len(original_tokens)
+            unique_id_to_token_info[example.unique_id].update({
+               "original_tokens2": original_tokens,
+               "original_to_bert2": set(original_to_bert)})
 
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
@@ -408,15 +431,13 @@ def main(_):
   if not FLAGS.do_tokens_only:
     unique_id_to_token_info = {}
     for feature in features:
+        # don't support pair case with two sentences...
+        assert len([i for i in feature.input_type_ids if i > 0]) == 0
         len_with_cls_sep = len([i for i in feature.input_ids if i > 0])
         unique_id_to_token_info[feature.unique_id] = {
             # remove [CLS], [SEP]
             "original_to_bert": list(range(len_with_cls_sep))[1:-1],
         }
-
-  unique_id_to_feature = {}
-  for feature in features:
-    unique_id_to_feature[feature.unique_id] = feature
 
   model_fn = model_fn_builder(
       bert_config=bert_config,
@@ -443,32 +464,51 @@ def main(_):
       unique_id_str = str(unique_id)
 
       # Get the vectors for the sentence
-      feature = unique_id_to_feature[unique_id]
-
+      all_ids = []
+      all_features_to_write = []
       ids_to_select = np.array(
         sorted(list(unique_id_to_token_info[unique_id]["original_to_bert"]))
       )
-      n_tokens = len(ids_to_select)
-      embed_dim = result["layer_output_0"].shape[1]
-      features_to_write = np.empty((NUM_BERT_LAYERS, n_tokens, embed_dim),
+      all_ids.append(ids_to_select)
+      if "original_to_bert2" in unique_id_to_token_info[unique_id]:
+        ids_to_select = np.array(
+            sorted(list(unique_id_to_token_info[unique_id]["original_to_bert2"]))
+        )
+        all_ids.append(ids_to_select)
+
+      for ids_to_select, key in zip(all_ids, ['original_tokens', 'original_tokens2']):
+          n_tokens = len(ids_to_select)
+          embed_dim = result["layer_output_0"].shape[1]
+          features_to_write = np.empty((NUM_BERT_LAYERS, n_tokens, embed_dim),
                                    dtype=np.float32)
-      for layer_num in range(NUM_BERT_LAYERS):
-        layer_output = result["layer_output_%d" % layer_num]
-        features_to_write[layer_num, :, :] = layer_output[ids_to_select]
+          for layer_num in range(NUM_BERT_LAYERS):
+            layer_output = result["layer_output_%d" % layer_num]
+            features_to_write[layer_num, :, :] = layer_output[ids_to_select]
 
-      # Check that number of timesteps in features is the same as
-      # the number of words.
-      if FLAGS.do_tokens_only:
-        if len(unique_id_to_token_info[unique_id]["original_tokens"]) != features_to_write.shape[1]:
-            raise ValueError("Original tokens: {} with len {}. "
+          # Check that number of timesteps in features is the same as
+          # the number of words.
+          if FLAGS.do_tokens_only:
+            if len(unique_id_to_token_info[unique_id][key]) != features_to_write.shape[1]:
+                raise ValueError("Original tokens: {} with len {}. "
                          "Shape of features_to_write: {}".format(
-                           unique_id_to_token_info[unique_id]["original_tokens"],
-                           len(unique_id_to_token_info[unique_id]["original_tokens"]),
+                           unique_id_to_token_info[unique_id][key],
+                           len(unique_id_to_token_info[unique_id][key]),
                            features_to_write.shape))
+          all_features_to_write.append(features_to_write)
 
-      fout.create_dataset(unique_id_str,
-                          features_to_write.shape, dtype='float32',
-                          data=features_to_write)
+      if len(all_features_to_write) == 1:
+        fout.create_dataset(unique_id_str,
+                          all_features_to_write[0].shape, dtype='float32',
+                          data=all_features_to_write[0])
+      else:
+        iid = 2 * unique_id
+        fout.create_dataset(str(iid),
+                          all_features_to_write[0].shape, dtype='float32',
+                          data=all_features_to_write[0])
+        fout.create_dataset(str(iid + 1),
+                          all_features_to_write[1].shape, dtype='float32',
+                          data=all_features_to_write[1])
+
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
