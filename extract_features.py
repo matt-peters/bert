@@ -37,6 +37,8 @@ flags.DEFINE_string("input_file", None, "")
 
 flags.DEFINE_string("output_file", None, "")
 
+flags.DEFINE_string("output_ids_file", None, "")
+
 flags.DEFINE_string(
     "bert_config_file", None,
     "The config json file corresponding to the pre-trained BERT model. "
@@ -346,7 +348,7 @@ class ff:
     bert_config_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_config.json'
     vocab_file = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/vocab.txt'
     init_checkpoint = '/home/matthewp/data/bert/uncased_L-12_H-768_A-12/bert_model.ckpt'
-    input_file = 'tt_pair.txt'
+    input_file = 'tt.txt'
     max_seq_length = 128
     batch_size = 4
     use_tpu = False
@@ -375,7 +377,8 @@ def main(_):
 
   examples = read_examples(FLAGS.input_file)
 
-  if FLAGS.do_tokens_only:
+  #if FLAGS.do_tokens_only:
+  if True:
       # Get a mapping of unique_id to the orig_to_token_map
       unique_id_to_token_info = {}
       for example in examples:
@@ -400,7 +403,8 @@ def main(_):
         assert len(original_to_bert) == len(original_tokens)
         unique_id_to_token_info[example.unique_id] = {
           "original_tokens": original_tokens,
-          "original_to_bert": set(original_to_bert)}
+          "original_to_bert": set(original_to_bert),
+          "bert_tokens": bert_tokens}
 
         # the second sentence
         if example.text_b is not None:
@@ -423,10 +427,43 @@ def main(_):
             assert len(original_to_bert) == len(original_tokens)
             unique_id_to_token_info[example.unique_id].update({
                "original_tokens2": original_tokens,
-               "original_to_bert2": set(original_to_bert)})
+               "original_to_bert2": set(original_to_bert),
+               "bert_tokens": bert_tokens})
 
   features = convert_examples_to_features(
       examples=examples, seq_length=FLAGS.max_seq_length, tokenizer=tokenizer)
+
+  if FLAGS.do_tokens_only:
+    # check the features!
+    for feature in features:
+        unique_info = unique_id_to_token_info[feature.unique_id]
+        if 'original_tokens2' in unique_info:
+            # TODO add a check for the pair case, maybe
+            continue
+        assert unique_info['bert_tokens'] == feature.tokens
+        bert_orig_tokens = [feature.tokens[iii] for iii in sorted(list(unique_info['original_to_bert']))]
+        orig_tokens = unique_info['original_tokens']
+        assert len(bert_orig_tokens) == len(orig_tokens)
+        # first letters of orig_tokens should match bert_orig_tokens
+        assert [tok[:len(bt)] for bt, tok in zip(bert_orig_tokens, orig_tokens)] == bert_orig_tokens
+
+  """
+    with open('ttt_ids.json', 'w') as fout:
+        for k, v in unique_id_to_token_info.items():
+            ob = sorted(list(v['original_to_bert']))
+            v['original_to_bert'] = ob
+        fout.write(json.dumps(unique_id_to_token_info))
+  """
+
+  if FLAGS.output_ids_file:
+    with open(FLAGS.output_ids_file, 'w') as fout:
+        for k, v in unique_id_to_token_info.items():
+            ob = sorted(list(v['original_to_bert']))
+            v['original_to_bert'] = ob
+            if 'original_to_bert2' in v:
+                ob2 = sorted(list(v['original_to_bert2']))
+                v['original_to_bert2'] = ob2
+        fout.write(json.dumps(unique_id_to_token_info))
 
   if not FLAGS.do_tokens_only:
     unique_id_to_token_info = {}
