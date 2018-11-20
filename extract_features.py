@@ -469,12 +469,30 @@ def main(_):
     unique_id_to_token_info = {}
     for feature in features:
         # don't support pair case with two sentences...
-        assert len([i for i in feature.input_type_ids if i > 0]) == 0
+        if len([i for i in feature.input_type_ids if i > 0]) == 0:
+            single_sentence = True
+        else:
+            single_sentence = False
+
+        # this is the total length of sequence, including [CLS], [SEP]
         len_with_cls_sep = len([i for i in feature.input_ids if i > 0])
-        unique_id_to_token_info[feature.unique_id] = {
-            # remove [CLS], [SEP]
-            "original_to_bert": list(range(len_with_cls_sep))[1:-1],
-        }
+
+        if single_sentence:
+            unique_id_to_token_info[feature.unique_id] = {
+                # remove [CLS], [SEP]
+                "original_to_bert": list(range(len_with_cls_sep))[1:-1],
+            }
+        else:
+            # two sentences
+            # total length with [SEP] at end for sentence2
+            length_sentence2_sep = len([i for i in feature.input_type_ids if i > 0])
+            # total length inclyding [CLS] and [SEP] between sentences
+            length_sentence1_with_cls_sep = len_with_cls_sep - length_sentence2_sep
+            unique_id_to_token_info[feature.unique_id] = {
+                # remove [CLS], [SEP]
+                "original_to_bert": list(range(length_sentence1_with_cls_sep))[1:-1],
+                "original_to_bert2": [iii + length_sentence1_with_cls_sep for iii in range(length_sentence2_sep - 1)]
+            }
 
   model_fn = model_fn_builder(
       bert_config=bert_config,
