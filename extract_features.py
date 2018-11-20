@@ -39,6 +39,8 @@ flags.DEFINE_string("output_file", None, "")
 
 flags.DEFINE_string("output_ids_file", None, "")
 
+flags.DEFINE_string("output_cls_file", None, "")
+
 flags.DEFINE_string(
     "bert_config_file", None,
     "The config json file corresponding to the pre-trained BERT model. "
@@ -513,6 +515,12 @@ def main(_):
 
   # Dict of str line# to (num_layers, num_tokens, embedding_size) numpy array
   output_features = {}
+
+  if FLAGS.output_cls_file:
+    fcls = h5py.File(FLAGS.output_cls_file, "w")
+  else:
+    fcls = None
+
   with h5py.File(FLAGS.output_file, "w") as fout:
     for result in tqdm(estimator.predict(input_fn, yield_single_examples=True)):
       unique_id = int(result["unique_id"])
@@ -551,10 +559,16 @@ def main(_):
                            features_to_write.shape))
           all_features_to_write.append(features_to_write)
 
+      if fcls is not None:
+        cls_embedding = result["layer_output_%d" % (NUM_BERT_LAYERS-1)][0, :]
+
       if len(all_features_to_write) == 1:
         fout.create_dataset(unique_id_str,
                           all_features_to_write[0].shape, dtype='float32',
                           data=all_features_to_write[0])
+        if fcls is not None:
+          fcls.create_dataset(unique_id_str, [embed_dim, ], dtype='float32',
+                              data=cls_embedding.astype(np.float32))
       else:
         iid = 2 * unique_id
         fout.create_dataset(str(iid),
@@ -563,7 +577,12 @@ def main(_):
         fout.create_dataset(str(iid + 1),
                           all_features_to_write[1].shape, dtype='float32',
                           data=all_features_to_write[1])
+        if fcls is not None:
+          fcls.create_dataset(str(iid), [embed_dim, ], dtype='float32',
+                              data=cls_embedding.astype(np.float32))
 
+  if fcls is not None:
+    fcls.close()
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
