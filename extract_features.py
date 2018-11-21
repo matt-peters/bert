@@ -467,6 +467,7 @@ def main(_):
                 v['original_to_bert2'] = ob2
         fout.write(json.dumps(unique_id_to_token_info))
 
+  nn = 0
   if not FLAGS.do_tokens_only:
     unique_id_to_token_info = {}
     for feature in features:
@@ -495,6 +496,10 @@ def main(_):
                 "original_to_bert": list(range(length_sentence1_with_cls_sep))[1:-1],
                 "original_to_bert2": [iii + length_sentence1_with_cls_sep for iii in range(length_sentence2_sep - 1)]
             }
+            nn += len(unique_id_to_token_info[feature.unique_id]['original_to_bert'])
+            nn += len(unique_id_to_token_info[feature.unique_id]['original_to_bert2'])
+
+  print("TOTAL WORD PIECES: ", nn)
 
   model_fn = model_fn_builder(
       bert_config=bert_config,
