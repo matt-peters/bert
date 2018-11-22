@@ -233,6 +233,8 @@ def convert_examples_to_features(examples, seq_length, tokenizer):
     else:
       # Account for [CLS] and [SEP] with "- 2"
       if len(tokens_a) > seq_length - 2:
+        print("sdfasfd!", len(tokens_a), seq_length - 2)
+        raise ValueError
         tokens_a = tokens_a[0:(seq_length - 2)]
 
     # The convention in BERT is:
