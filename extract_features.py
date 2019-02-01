@@ -449,7 +449,10 @@ def main(_):
         orig_tokens = unique_info['original_tokens']
         assert len(bert_orig_tokens) == len(orig_tokens)
         # first letters of orig_tokens should match bert_orig_tokens
-        assert [tok[:len(bt)] for bt, tok in zip(bert_orig_tokens, orig_tokens)] == bert_orig_tokens
+        if FLAGS.do_lower_case:
+            assert [tok[:len(bt)].lower() for bt, tok in zip(bert_orig_tokens, orig_tokens)] == bert_orig_tokens
+        else:
+            assert [tok[:len(bt)] for bt, tok in zip(bert_orig_tokens, orig_tokens)] == bert_orig_tokens
 
   """
     with open('ttt_ids.json', 'w') as fout:
